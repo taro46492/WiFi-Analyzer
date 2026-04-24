@@ -1,9 +1,8 @@
 ﻿using Microsoft.EntityFrameworkCore;
-using NativeWifi;
+using ManagedNativeWifi;
 using WiFi_Analyzer.Database;
 using WiFi_Analyzer.Extensions;
 using WiFi_Analyzer.Models;
-using static NativeWifi.Wlan;
 
 namespace WiFi_Analyzer.Services.Networks;
 
@@ -79,50 +78,42 @@ public class NetworksService : NetworkService, INetworksService
 
     public async Task UpdateWiFiNetworksAsync()
     {
-        WlanClient client = new WlanClient();
-
-        foreach (WlanClient.WlanInterface wlanInterface in client.Interfaces)
+        foreach (BssNetworkPack bssEntry in NativeWifi.EnumerateBssNetworks())
         {
-            WlanBssEntry[] bssEntries = wlanInterface.GetNetworkBssList();
+            string ssid = GetStringForSSID(bssEntry.Ssid);
+            long frequency = GetFrequencyFromChannel(bssEntry.Frequency);
+            byte[] macAddress = bssEntry.Bssid.ToBytes();
+            int channel = GetChannelFromFrequency(frequency);
+            string protocol = FindProtocolString(bssEntry);
 
-            foreach (var bssEntry in bssEntries)
+            if (GetWlanAvailableNetworkByProfileName(ssid, bssEntry.Interface.Id) is AvailableNetworkPack wlanAvailableNetwork)
             {
-                string ssid = GetStringForSSID(bssEntry.dot11Ssid);
-                long frequency = GetFrequencyFromChannel(bssEntry.chCenterFrequency);
-                byte[] macAddress = bssEntry.dot11Bssid;
-                int channel = GetChannelFromFrequency(frequency);
-                string protocol = FindProtocolString(bssEntry);
+                AuthenticationAlgorithm authenticationAlgorithm = wlanAvailableNetwork.AuthenticationAlgorithm;
+                bool isSecured = wlanAvailableNetwork.IsSecurityEnabled;
 
-
-                if (GetWlanAvailableNetworkByProfileName(ssid) is WlanAvailableNetwork wlanAvailableNetwork)
+                WiFiNetwork network = new()
                 {
-                    Dot11AuthAlgorithm authenticationAlgorithm = wlanAvailableNetwork.dot11DefaultAuthAlgorithm;
-                    bool isSecured = wlanAvailableNetwork.securityEnabled;
+                    SSID = ssid,
+                    FrequencyInHz = frequency,
+                    Channel = channel,
+                    MacAddress = macAddress,
+                    IsSecured = isSecured,
+                    AuthenticationAlgorithm = authenticationAlgorithm,
+                    Protocol = protocol,
+                    LastSeen = DateTime.Now
+                };
 
-                    WiFiNetwork network = new()
-                    {
-                        SSID = ssid,
-                        FrequencyInHz = frequency,
-                        Channel = channel,
-                        MacAddress = macAddress,
-                        IsSecured = isSecured,
-                        AuthenticationAlgorithm = authenticationAlgorithm,
-                        Protocol = protocol,
-                        LastSeen = DateTime.Now
-                    };
+                string macAddressStr = macAddress.MacAddressToString();
+                WiFiNetwork? _network = await GetWiFiNetworkByBSSIDAsync(macAddressStr);
 
-                    string macAddressStr = macAddress.MacAddressToString();
-                    WiFiNetwork? _network = await GetWiFiNetworkByBSSIDAsync(macAddressStr);
-
-                    if (_network is null)
-                    {
-                        await AddWiFiNetworkAsync(network);
-                    }
-                    else
-                    {
-                        CopyWiFiNetworkValues(network, _network);
-                        await UpdateWiFiNetworkAsync(_network);
-                    }
+                if (_network is null)
+                {
+                    await AddWiFiNetworkAsync(network);
+                }
+                else
+                {
+                    CopyWiFiNetworkValues(network, _network);
+                    await UpdateWiFiNetworkAsync(_network);
                 }
             }
         }
@@ -130,39 +121,41 @@ public class NetworksService : NetworkService, INetworksService
 
     public NetworkStates? GetNetworkStates(WiFiNetwork network)
     {
-        WlanClient client = new WlanClient();
-        foreach (WlanClient.WlanInterface wlanInterface in client.Interfaces)
+        foreach (BssNetworkPack bssEntry in NativeWifi.EnumerateBssNetworks())
         {
-            WlanBssEntry[] bssEntries = wlanInterface.GetNetworkBssList();
+            string macAddressStr = bssEntry.Bssid.ToBytes().MacAddressToString();
 
-            foreach (var bssEntry in bssEntries)
+            if (network.StringMacAddress == macAddressStr)
             {
-                string macAddressStr = bssEntry.dot11Bssid.MacAddressToString();
+                string ssid = GetStringForSSID(bssEntry.Ssid);
+                int signalStrength = bssEntry.SignalStrength;
+                long frequency = GetFrequencyFromChannel(bssEntry.Frequency);
+                double distance = CalculateDistance(signalStrength, frequency);
 
-                if (network.StringMacAddress == macAddressStr)
+                bool isConnected = false;
+
+                InterfaceConnectionInfo? connectedInterface = NativeWifi.EnumerateInterfaceConnections()
+                    .FirstOrDefault(connection => connection.IsConnected &&
+                                                  connection.State == InterfaceState.Connected &&
+                                                  connection.Id == bssEntry.Interface.Id);
+
+                if (connectedInterface is not null)
                 {
-                    string ssid = GetStringForSSID(bssEntry.dot11Ssid);
-                    int signalStrength = bssEntry.rssi;
-                    long frequency = GetFrequencyFromChannel(bssEntry.chCenterFrequency);
-                    double distance = CalculateDistance(signalStrength, frequency);
+                    string? connectedSSID = NativeWifi.EnumerateAvailableNetworks()
+                        .Where(item => item.Interface.Id == connectedInterface.Id &&
+                                       item.ProfileName == connectedInterface.ProfileName)
+                        .Select(item => GetStringForSSID(item.Ssid))
+                        .FirstOrDefault();
 
-                    bool isConnected = false;
-
-                    if (wlanInterface.InterfaceState == WlanInterfaceState.Connected)
-                    {
-                        string connectedSSID = GetStringForSSID(wlanInterface.CurrentConnection.wlanAssociationAttributes.dot11Ssid);
-
-                        if (ssid == connectedSSID)
-                            isConnected = true;
-                    }
-
-                    return new NetworkStates()
-                    {
-                        IsConnected = isConnected,
-                        DistanceInMeters = distance,
-                        SignalStrengthIndBm = signalStrength
-                    };
+                    isConnected = string.Equals(ssid, connectedSSID, StringComparison.Ordinal);
                 }
+
+                return new NetworkStates()
+                {
+                    IsConnected = isConnected,
+                    DistanceInMeters = distance,
+                    SignalStrengthIndBm = signalStrength
+                };
             }
         }
 

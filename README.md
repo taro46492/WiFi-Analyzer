@@ -109,4 +109,4 @@ To get started with the WiFi Network Analyzer, launch the application and naviga
 
 - A device with WiFi capability
 - .NET MAUI (Multi-platform App UI) framework
-- Visual Studio 2022 or later with .NET MAUI workload installed
+- Visual Studio 2026 or later with .NET 10 MAUI workload installed
