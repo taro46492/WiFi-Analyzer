@@ -1,45 +1,46 @@
-﻿using NativeWifi;
+﻿using ManagedNativeWifi;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Net;
 using WiFi_Analyzer.Models;
-using static NativeWifi.Wlan;
 
 namespace WiFi_Analyzer.Services.ConnectedNetwork;
 
 public class ConnectedNetworkService : NetworkService, IConnectedNetworkService
 {
-    WlanBssEntry GetConnectedWlanBssEntry()
+    BssNetworkPack GetConnectedWlanBssEntry()
     {
-        WlanClient client = new();
+        InterfaceConnectionInfo? connectedInterface = NativeWifi.EnumerateInterfaceConnections()
+            .FirstOrDefault(connection => connection.IsConnected && connection.State == InterfaceState.Connected);
 
-        foreach (WlanClient.WlanInterface wlanInterface in client.Interfaces)
+        if (connectedInterface is null)
+            throw new Exception("No internet connection detected.");
+
+        string? connectedSSID = NativeWifi.EnumerateAvailableNetworks()
+            .Where(network => network.Interface.Id == connectedInterface.Id &&
+                              network.ProfileName == connectedInterface.ProfileName)
+            .Select(network => GetStringForSSID(network.Ssid))
+            .FirstOrDefault();
+
+        IEnumerable<BssNetworkPack> connectedBssEntries = NativeWifi.EnumerateBssNetworks()
+            .Where(bssEntry => bssEntry.Interface.Id == connectedInterface.Id);
+
+        if (!string.IsNullOrWhiteSpace(connectedSSID))
         {
-            if (wlanInterface.InterfaceState == WlanInterfaceState.Connected)
-            {
-                Dot11Ssid ssid = wlanInterface.CurrentConnection.wlanAssociationAttributes.dot11Ssid;
-                WlanBssEntry[] bssEntries = wlanInterface.GetNetworkBssList();
-
-                foreach (WlanBssEntry bssEntry in bssEntries)
-                {
-                    string currentSSID = GetStringForSSID(ssid);
-                    string bssEntrySSID = GetStringForSSID(bssEntry.dot11Ssid);
-
-                    if (currentSSID == bssEntrySSID)
-                        return bssEntry;
-                }
-            }
+            connectedBssEntries = connectedBssEntries
+                .Where(bssEntry => GetStringForSSID(bssEntry.Ssid) == connectedSSID);
         }
 
-        throw new Exception("No internet connection detected.");
+        return connectedBssEntries.OrderByDescending(entry => entry.SignalStrength).FirstOrDefault()
+            ?? throw new Exception("No internet connection detected.");
     }
 
     public NetworkStates GetConnectedNetworkStates()
     {
-        WlanBssEntry connectedBssEntry = GetConnectedWlanBssEntry();
+        BssNetworkPack connectedBssEntry = GetConnectedWlanBssEntry();
 
-        long frequency = GetFrequencyFromChannel(connectedBssEntry.chCenterFrequency);
-        int signalStrength = connectedBssEntry.rssi;
+        long frequency = GetFrequencyFromChannel(connectedBssEntry.Frequency);
+        int signalStrength = connectedBssEntry.SignalStrength;
 
         NetworkStates networkStates = new();
 
@@ -52,23 +53,24 @@ public class ConnectedNetworkService : NetworkService, IConnectedNetworkService
 
     public WiFiNetwork GetConnectedWiFiNetwork()
     {
-        WlanBssEntry connectedBssEntry = GetConnectedWlanBssEntry();
+        BssNetworkPack connectedBssEntry = GetConnectedWlanBssEntry();
 
         WiFiNetwork wiFiNetwork = new();
 
-        long frequency = GetFrequencyFromChannel(connectedBssEntry.chCenterFrequency);
-        string currentSSID = GetStringForSSID(connectedBssEntry.dot11Ssid);
+        long frequency = GetFrequencyFromChannel(connectedBssEntry.Frequency);
+        string currentSSID = GetStringForSSID(connectedBssEntry.Ssid);
 
         wiFiNetwork.SSID = currentSSID;
         wiFiNetwork.Channel = GetChannelFromFrequency(frequency);
         wiFiNetwork.FrequencyInHz = frequency;
         wiFiNetwork.Protocol = FindProtocolString(connectedBssEntry);
-        wiFiNetwork.MacAddress = connectedBssEntry.dot11Bssid;
+        wiFiNetwork.MacAddress = connectedBssEntry.Bssid.ToBytes();
 
-        WlanAvailableNetwork wlanAvailableNetwork = GetWlanAvailableNetworkByProfileName(currentSSID)!.Value;
+        AvailableNetworkPack? wlanAvailableNetwork =
+            GetWlanAvailableNetworkByProfileName(currentSSID, connectedBssEntry.Interface.Id);
 
-        wiFiNetwork.IsSecured = wlanAvailableNetwork.securityEnabled;
-        wiFiNetwork.AuthenticationAlgorithm = wlanAvailableNetwork.dot11DefaultAuthAlgorithm;
+        wiFiNetwork.IsSecured = wlanAvailableNetwork?.IsSecurityEnabled ?? false;
+        wiFiNetwork.AuthenticationAlgorithm = wlanAvailableNetwork?.AuthenticationAlgorithm ?? AuthenticationAlgorithm.Unknown;
 
         return wiFiNetwork;
     }
@@ -121,22 +123,20 @@ public class ConnectedNetworkService : NetworkService, IConnectedNetworkService
     {
         NetworkSecurityInfo networkSecurityInfo = new();
 
-        var client = new WlanClient();
+        InterfaceConnectionInfo? connectedInterface = NativeWifi.EnumerateInterfaceConnections()
+            .FirstOrDefault(connection => connection.IsConnected && connection.State == InterfaceState.Connected);
 
-        foreach (var wlanInterface in client.Interfaces)
+        if (connectedInterface is null)
+            return networkSecurityInfo;
+
+        AvailableNetworkPack? network = NativeWifi.EnumerateAvailableNetworks().FirstOrDefault(item =>
+            item.Interface.Id == connectedInterface.Id &&
+            item.ProfileName == connectedInterface.ProfileName);
+
+        if (network is not null)
         {
-            var currentConnection = wlanInterface.CurrentConnection;
-
-            WlanAvailableNetwork[] networks = wlanInterface.GetAvailableNetworkList(0);
-            foreach (WlanAvailableNetwork network in networks)
-            {
-                if (network.profileName == currentConnection.profileName)
-                {
-                    networkSecurityInfo.Authentication = network.dot11DefaultAuthAlgorithm;
-                    networkSecurityInfo.Encryption = network.dot11DefaultCipherAlgorithm;
-                    break;
-                }
-            }
+            networkSecurityInfo.Authentication = network.AuthenticationAlgorithm;
+            networkSecurityInfo.Encryption = network.CipherAlgorithm;
         }
 
         return networkSecurityInfo;

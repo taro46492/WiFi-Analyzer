@@ -1,23 +1,19 @@
-﻿using NativeWifi;
+﻿using ManagedNativeWifi;
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using WiFi_Analyzer.Models;
-using static NativeWifi.Wlan;
 
 namespace WiFi_Analyzer.Services;
 
 public abstract class NetworkService
 {
-    protected string GetStringForSSID(Dot11Ssid ssid)
-        => Encoding.ASCII.GetString(ssid.SSID, 0, (int)ssid.SSIDLength);
+    protected string GetStringForSSID(NetworkIdentifier ssid)
+        => ssid.ToString();
 
-    protected string FindProtocolString(WlanBssEntry bssEntry)
+    protected string FindProtocolString(BssNetworkPack bssEntry)
     {
-        int rssi = bssEntry.rssi;
-        uint chCenterFrequency = bssEntry.chCenterFrequency;
+        int rssi = bssEntry.SignalStrength;
+        uint chCenterFrequency = (uint)(bssEntry.Frequency * 1000);
 
         if (chCenterFrequency >= 2400000 && chCenterFrequency < 2500000)
         {
@@ -53,22 +49,12 @@ public abstract class NetworkService
         }
     }
 
-    protected WlanAvailableNetwork? GetWlanAvailableNetworkByProfileName(string profileName)
+    protected AvailableNetworkPack? GetWlanAvailableNetworkByProfileName(string profileName, Guid? interfaceId = null)
     {
-        WlanClient wlanClient = new WlanClient();
-
-        foreach (WlanClient.WlanInterface wlanInterface in wlanClient.Interfaces)
-        {
-            WlanAvailableNetwork[] availableNetworks = wlanInterface.GetAvailableNetworkList(0);
-            foreach (WlanAvailableNetwork network in availableNetworks)
-            {
-                string networkProfileName = GetStringForSSID(network.dot11Ssid);
-                if (networkProfileName == profileName)
-                    return network;
-            }
-        }
-
-        return null;
+        return NativeWifi.EnumerateAvailableNetworks().FirstOrDefault(network =>
+            (interfaceId is null || network.Interface.Id == interfaceId.Value) &&
+            (string.Equals(network.ProfileName, profileName, StringComparison.Ordinal) ||
+             string.Equals(GetStringForSSID(network.Ssid), profileName, StringComparison.Ordinal)));
     }
 
     protected long GetFrequencyFromChannel(long channelFrequency)

@@ -1,8 +1,8 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using ManagedNativeWifi;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 using WiFi_Analyzer.Extensions;
-using static NativeWifi.Wlan;
 
 namespace WiFi_Analyzer.Models;
 
@@ -37,7 +37,7 @@ public class WiFiNetwork : IEntityBase
     public bool IsSecured { get; set; }
 
     [Column("Authentication")]
-    public Dot11AuthAlgorithm AuthenticationAlgorithm { get; set; }
+    public AuthenticationAlgorithm AuthenticationAlgorithm { get; set; }
 
     [NotMapped]
     public NetworkStates? NetworkStates { get; set; }
